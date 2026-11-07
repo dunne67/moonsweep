@@ -17,7 +17,7 @@ local MS = require("moonsweep")
 local function parseArgs(args)
     local opts = {
         seed = 1,
-        games = 10000,
+        games = 1000, -- default 1,000 games per difficulty (pass --games 10000 for high-sample runs)
         difficulty = "all",
         mode = "Regular"
     }
