@@ -1,0 +1,6 @@
+*.log
+bench/results/
+.vscode/
+Thumbs.db
+desktop.ini
+.git/
