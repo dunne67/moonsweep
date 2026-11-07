@@ -1,5 +1,12 @@
 -- moonsweep.lua
--- Standalone Minesweeper probability solver (pure Lua 5.1+ / LuaJIT).
+-- Fast, exact-probability Minesweeper solver in pure Lua (5.1+ / LuaJIT).
+-- Version: 1.0.0
+-- License: MIT
+-- Repository: https://github.com/dunne67/moonsweep
+--
+-- Single-file, zero-dependency library supporting 8 board modes,
+-- arc-consistency preprocessing, frontier dynamic programming,
+-- and global mine-count probability convolution.
 --
 -- Usage:
 --   local MS = require("moonsweep")
@@ -16,7 +23,7 @@
 --
 -- Cell characters (rows are strings, one char per cell; or tables of cells):
 --   "?"      unknown
---   "E"/"0"  revealed empty
+--   "E"/"0"  revealed empty (treated as 0 clue)
 --   "1".."9" revealed clue (raw value, decoded by the mode)
 --   "M"/"F"  known mine
 --   "."      no tile at this position
@@ -34,11 +41,11 @@ M.Config = {
         Enabled = true,
         StateCap = 50000,
         MaxClusterVars = 625,
-        TimeBudgetMs = nil -- Default: no time limit, only state cap
+        TimeBudgetMs = nil -- nil = no time limit (deterministic, bounded by StateCap)
     },
     Preprocess = {
         ArcProbeLimit = 16,
-        ArcProbeTimeBudgetMs = 4,
+        ArcProbeTimeBudgetMs = nil, -- nil = no time limit (deterministic, bounded by ArcProbeLimit)
         ArcMinEquations = 6,
         ArcSmallVarSkip = 18,
         ArcSmallClusterSkip = 12
@@ -176,25 +183,46 @@ function M.EstimateTotalMines(width, height)
     return Round(area * 0.206)
 end
 
-local function ParseCell(cell, mode)
+local function ParseCell(cell, mode, errLevel)
+    errLevel = errLevel or 2
     if cell == nil or cell == "." then return nil end
     if type(cell) == "number" then
+        if cell < 0 or cell % 1 ~= 0 then
+            error(string.format("moonsweep: clue number must be a non-negative integer, got %s", tostring(cell)), errLevel)
+        end
         local decoded = mode.DecodeClue(cell)
         if decoded and decoded > 0 then return "safe_numbered", decoded end
         if decoded == 0 then return "safe_empty", 0 end
         return "unknown", nil
     end
-    cell = tostring(cell)
+    if type(cell) ~= "string" then
+        error(string.format("moonsweep: invalid cell value of type '%s'", type(cell)), errLevel)
+    end
     if cell == "?" then return "unknown", nil end
-    if cell == "E" or cell == "e" or cell == " " or cell == "" then return "safe_empty", 0 end
+    if cell == "E" or cell == "e" or cell == "0" or cell == " " or cell == "" then return "safe_empty", 0 end
     if cell == "M" or cell == "m" or cell == "F" or cell == "f" then return "mine", nil end
     local num = tonumber(cell)
-    if num then return ParseCell(num, mode) end
-    return "unknown", nil
+    if num then
+        if num < 0 or num % 1 ~= 0 then
+            error(string.format("moonsweep: clue number must be a non-negative integer, got %s", tostring(num)), errLevel)
+        end
+        local decoded = mode.DecodeClue(num)
+        if decoded and decoded > 0 then return "safe_numbered", decoded end
+        if decoded == 0 then return "safe_empty", 0 end
+        return "unknown", nil
+    end
+    error(string.format("moonsweep: unknown cell character '%s'", cell), errLevel)
 end
 
-local function SplitRow(row)
+local function SplitRow(row, errLevel)
+    errLevel = errLevel or 2
     if type(row) == "table" then return row end
+    if type(row) ~= "string" then
+        error(string.format("moonsweep: row must be a string or table, got %s", type(row)), errLevel)
+    end
+    if #row == 0 then
+        error("moonsweep: row cannot be empty", errLevel)
+    end
     local cells = {}
     for i = 1, #row do
         cells[i] = string.sub(row, i, i)
@@ -207,22 +235,33 @@ end
 function M.BuildBoard(rows, totalMines, modeName)
     local mode = M.Modes[modeName or "Regular"]
     if not mode then
-        error("unknown mode: " .. tostring(modeName))
+        error("moonsweep: unknown mode '" .. tostring(modeName) .. "'", 2)
+    end
+    if type(rows) ~= "table" or #rows == 0 then
+        error("moonsweep: rows must be a non-empty table", 2)
     end
     local parsedRows = {}
-    local width = 0
-    for z = 1, #rows do
-        parsedRows[z] = SplitRow(rows[z])
-        if #parsedRows[z] > width then width = #parsedRows[z] end
-    end
+    local width = nil
     local height = #rows
+    for z = 1, height do
+        local cells = SplitRow(rows[z], 3)
+        if width == nil then
+            width = #cells
+            if width == 0 then
+                error("moonsweep: row 1 cannot be empty", 2)
+            end
+        elseif #cells ~= width then
+            error(string.format("moonsweep: row length mismatch: row 1 is %d, row %d is %d", width, z, #cells), 2)
+        end
+        parsedRows[z] = cells
+    end
     local grid = {}
     for x = 1, width do grid[x] = {} end
     local tiles = {}
     for z = 1, height do
         local row = parsedRows[z]
         for x = 1, width do
-            local tileType, value = ParseCell(row[x], mode)
+            local tileType, value = ParseCell(row[x], mode, 3)
             if tileType then
                 local tile = {
                     X = x,
@@ -249,13 +288,28 @@ function M.BuildBoard(rows, totalMines, modeName)
         end
     end
     for _, tile in ipairs(tiles) do
+        if tile.Type == "safe_numbered" and tile.Value and tile.Value > #tile.Neighbors then
+            error(string.format("moonsweep: clue %d exceeds neighbor count %d at (%d, %d)",
+                tile.Value, #tile.Neighbors, tile.X, tile.Z), 2)
+        end
         local frontier = false
         if tile.Type == "unknown" then
             for _, n in ipairs(tile.Neighbors) do
-                if n.Type == "safe_numbered" then frontier = true break end
+                if n.Type == "safe_numbered" or n.Type == "safe_empty" then
+                    frontier = true
+                    break
+                end
             end
         end
         tile.IsFrontier = frontier
+    end
+    if totalMines ~= nil then
+        if type(totalMines) ~= "number" or totalMines < 0 or totalMines % 1 ~= 0 then
+            error(string.format("moonsweep: totalMines must be a non-negative integer, got %s", tostring(totalMines)), 2)
+        end
+        if totalMines > #tiles then
+            error(string.format("moonsweep: totalMines (%d) exceeds tile count (%d)", totalMines, #tiles), 2)
+        end
     end
     return {
         Mode = mode,
@@ -267,7 +321,15 @@ function M.BuildBoard(rows, totalMines, modeName)
         TotalMines = totalMines or M.EstimateTotalMines(width, height),
         MinesConfirmed = 0,
         SolveGeneration = 0,
+        Exact = true,
+        Status = "ok",
         Stats = {
+            ClusterCount = 0,
+            MaxCluster = 0,
+            DPClusterCount = 0,
+            DPAbortCount = 0,
+            DPMaxStates = 0,
+            DPMs = 0,
             LastClusterCount = 0,
             LastMaxCluster = 0,
             LastDPClusterCount = 0,
@@ -278,15 +340,73 @@ function M.BuildBoard(rows, totalMines, modeName)
     }
 end
 
--- Clears all predictions/probabilities (e.g. after changing TotalMines).
+-- Clears all predictions/probabilities and resets solver state.
 function M.ClearSolverOutput(board)
     board.SolveGeneration = board.SolveGeneration + 1
     board.MinesConfirmed = 0
+    board.Exact = true
+    board.Status = "ok"
+    local s = board.Stats
+    s.ClusterCount = 0
+    s.MaxCluster = 0
+    s.DPClusterCount = 0
+    s.DPAbortCount = 0
+    s.DPMaxStates = 0
+    s.DPMs = 0
+    s.LastClusterCount = 0
+    s.LastMaxCluster = 0
+    s.LastDPClusterCount = 0
+    s.LastDPAbortCount = 0
+    s.LastDPMaxStates = 0
+    s.LastDPMs = 0
     for _, tile in ipairs(board.Tiles) do
         tile.predicted = nil
         tile.probability = nil
         tile.ProbabilityGeneration = nil
     end
+end
+
+-- Resets solver outputs and refreshes tile frontier flags.
+function M.Reset(board)
+    M.ClearSolverOutput(board)
+    for _, tile in ipairs(board.Tiles) do
+        local frontier = false
+        if tile.Type == "unknown" then
+            for _, n in ipairs(tile.Neighbors) do
+                if n.Type == "safe_numbered" or n.Type == "safe_empty" then
+                    frontier = true
+                    break
+                end
+            end
+        end
+        tile.IsFrontier = frontier
+    end
+end
+
+-- Updates a cell on an existing board, validating the new value and resetting solver state.
+function M.SetCell(board, x, z, cell)
+    if type(x) ~= "number" or type(z) ~= "number" then
+        error("moonsweep: coordinates must be numbers", 2)
+    end
+    if x < 1 or x > board.Width or z < 1 or z > board.Height then
+        error(string.format("moonsweep: coordinates out of bounds (x=%s, z=%s, width=%d, height=%d)",
+            tostring(x), tostring(z), board.Width, board.Height), 2)
+    end
+    local tile = board.Grid[x][z]
+    if not tile then
+        error(string.format("moonsweep: cannot set void cell at (%d, %d)", x, z), 2)
+    end
+    local tileType, value = ParseCell(cell, board.Mode, 3)
+    if not tileType then
+        error(string.format("moonsweep: cannot set void cell at (%d, %d)", x, z), 2)
+    end
+    if tileType == "safe_numbered" and value and value > #tile.Neighbors then
+        error(string.format("moonsweep: clue %d exceeds neighbor count %d at (%d, %d)",
+            value, #tile.Neighbors, x, z), 2)
+    end
+    tile.Type = tileType
+    tile.Value = value
+    M.Reset(board)
 end
 
 ---------------------------------------------------------------------------
@@ -418,7 +538,7 @@ local function BuildPreprocessShape(equations, varCount, resolved)
         if resolved[varId] == nil then remainingVars = remainingVars + 1 end
     end
     local parent, rank = {}, {}
-    local eqCount, edgeCount = 0, 0
+    local eqCount = 0
     for varId = 1, varCount do
         if resolved[varId] == nil then
             parent[varId] = varId
@@ -448,7 +568,6 @@ local function BuildPreprocessShape(equations, varCount, resolved)
     for _, eq in ipairs(equations or {}) do
         if #eq.vars > 0 then
             eqCount = eqCount + 1
-            edgeCount = edgeCount + #eq.vars
             local first = nil
             for _, varId in ipairs(eq.vars) do
                 if parent[varId] then
@@ -470,8 +589,6 @@ local function BuildPreprocessShape(equations, varCount, resolved)
     return {
         remainingVars = remainingVars,
         eqCount = eqCount,
-        edgeCount = edgeCount,
-        avgDegree = remainingVars > 0 and (edgeCount / remainingVars) or 0,
         maxCluster = maxCluster
     }
 end
@@ -518,11 +635,11 @@ local function RunArcConsistencyPreprocess(equations, varCount)
     end)
     local probes = 0
     local probeLimit = CONFIG.Preprocess.ArcProbeLimit or 16
-    local timeBudget = (CONFIG.Preprocess.ArcProbeTimeBudgetMs or 4) / 1000
+    local probeBudgetMs = CONFIG.Preprocess.ArcProbeTimeBudgetMs
     local probeStartClock = os.clock()
     for _, varId in ipairs(vars) do
         if probes >= probeLimit then break end
-        if (os.clock() - probeStartClock) >= timeBudget then
+        if probeBudgetMs ~= nil and (os.clock() - probeStartClock) * 1000 >= probeBudgetMs then
             stats.arcSkipped = 1
             break
         end
@@ -598,7 +715,7 @@ local function BuildFrontierDPPlan(nVars, localEqs, order)
         table.sort(active)
         activeAfter[idx] = active
     end
-    return eqPositions, starts, ends, incident, activeAfter
+    return eqPositions, starts, incident, activeAfter
 end
 
 local function AddDist(target, source, mineOffset, weightMultiplier)
@@ -609,7 +726,7 @@ local function AddDist(target, source, mineOffset, weightMultiplier)
 end
 
 local function BuildOptimizedDPPlan(nVars, localEqs, order)
-    local eqPositions, starts, _ends, incident, activeAfter = BuildFrontierDPPlan(nVars, localEqs, order)
+    local eqPositions, starts, incident, activeAfter = BuildFrontierDPPlan(nVars, localEqs, order)
     local activeMeta, transitionData = {}, {}
     for idx = 0, nVars do
         local active = (idx == 0) and {} or activeAfter[idx]
@@ -693,9 +810,9 @@ local function SolveClusterFrontierDP(cluster, localEqs, unknownList)
     local nVars = #cluster.vars
     if nVars > CONFIG.FrontierDP.MaxClusterVars then return nil, nil, "var_cap", 0, 0 end
     local startClock = os.clock()
-    local timeBudget = (CONFIG.FrontierDP.TimeBudgetMs or 6) / 1000
+    local budgetMs = CONFIG.FrontierDP.TimeBudgetMs
     local function TimedOut()
-        return (os.clock() - startClock) >= timeBudget
+        return budgetMs ~= nil and (os.clock() - startClock) * 1000 >= budgetMs
     end
     local function Elapsed()
         return (os.clock() - startClock) * 1000
@@ -913,12 +1030,35 @@ function M.Run(board)
         s.LastDPAbortCount = solveDPAbortCount
         s.LastDPMaxStates = solveDPMaxStates
         s.LastDPMs = solveDPMs
+
+        s.ClusterCount = s.ClusterCount + solveClusterCount
+        if solveMaxCluster > s.MaxCluster then s.MaxCluster = solveMaxCluster end
+        s.DPClusterCount = s.DPClusterCount + solveDPClusterCount
+        s.DPAbortCount = s.DPAbortCount + solveDPAbortCount
+        if solveDPMaxStates > s.DPMaxStates then s.DPMaxStates = solveDPMaxStates end
+        s.DPMs = s.DPMs + solveDPMs
+
+        if board.Status ~= "contradiction" then
+            if s.DPAbortCount > 0 then
+                board.Status = "approximate"
+                board.Exact = false
+            else
+                board.Status = "ok"
+                board.Exact = true
+            end
+        else
+            board.Exact = false
+        end
         return result
     end
     local function SolveUniform()
         local confirmed, active = CountState()
         local remaining = board.TotalMines - confirmed
-        if remaining < 0 then remaining = 0 end
+        if remaining < 0 or remaining > active then
+            board.Status = "contradiction"
+            board.Exact = false
+            return false, 0
+        end
         local probability = UniformProbability(remaining, active)
         local progress = false
         for _, tile in ipairs(tiles) do
@@ -937,15 +1077,17 @@ function M.Run(board)
     local minesRemaining = board.TotalMines - confirmedMines
     if minesRemaining < 0 then minesRemaining = 0 end
 
-    -- Build equations from numbered tiles.
+    -- Build equations from numbered tiles and revealed empty tiles (clue 0).
     local unknownMap = {}
     local unknownList = {}
     local equations = {}
     for _, tile in ipairs(tiles) do
-        if tile.Type == "safe_numbered" and tile.Value then
+        local isClue = (tile.Type == "safe_numbered" and tile.Value ~= nil) or (tile.Type == "safe_empty")
+        if isClue then
+            local clueVal = (tile.Type == "safe_empty") and 0 or tile.Value
             local unknowns, foundMines = GetTileConstraintState(tile)
-            local needed = tile.Value - foundMines
-            if #unknowns > 0 and needed >= 0 then
+            local needed = clueVal - foundMines
+            if #unknowns > 0 then
                 local eqVars = {}
                 for _, uTile in ipairs(unknowns) do
                     if not unknownMap[uTile] then
@@ -955,6 +1097,10 @@ function M.Run(board)
                     eqVars[#eqVars + 1] = unknownMap[uTile]
                 end
                 equations[#equations + 1] = { needed = needed, vars = eqVars }
+            elseif needed ~= 0 then
+                board.Status = "contradiction"
+                board.Exact = false
+                return Finish(false)
             end
         end
     end
@@ -966,8 +1112,12 @@ function M.Run(board)
         return Finish(progress)
     end
 
-    local reducedEqs, resolvedValues = RunArcConsistencyPreprocess(equations, #unknownList)
+    local reducedEqs, resolvedValues, preprocessStatus = RunArcConsistencyPreprocess(equations, #unknownList)
     if not reducedEqs then
+        if preprocessStatus == "contradiction" then
+            board.Status = "contradiction"
+            board.Exact = false
+        end
         local _, active = CountState()
         local fallbackProbability = UniformProbability(minesRemaining, active)
         for _, tile in ipairs(unknownList) do
@@ -1125,7 +1275,11 @@ function M.Run(board)
             solvedClusterVarCount = solvedClusterVarCount + #cluster.vars
             solveDPClusterCount = solveDPClusterCount + 1
         else
-            if dpStatus ~= "disabled" then
+            if dpStatus == "empty" or dpStatus == "no_ways" or dpStatus == "contradiction" then
+                board.Status = "contradiction"
+                board.Exact = false
+                return Finish(false)
+            elseif dpStatus ~= "disabled" then
                 solveDPAbortCount = solveDPAbortCount + 1
             end
             SetFallbackForCluster(cluster)
@@ -1173,6 +1327,10 @@ function M.Run(board)
                     madeProgress = true
                 end
             end
+        else
+            board.Status = "contradiction"
+            board.Exact = false
+            return Finish(false)
         end
     end
 
@@ -1203,10 +1361,16 @@ function M.Run(board)
                 end
             end
         else
-            for _, globId in ipairs(data.orderedVars) do
-                local tile = unknownList[globId]
-                if tile and tile.Type == "unknown" and tile.predicted == nil then
-                    SetFallbackProbability(tile, fallbackProbability)
+            if solveDPAbortCount == 0 then
+                board.Status = "contradiction"
+                board.Exact = false
+                return Finish(false)
+            else
+                for _, globId in ipairs(data.orderedVars) do
+                    local tile = unknownList[globId]
+                    if tile and tile.Type == "unknown" and tile.predicted == nil then
+                        SetFallbackProbability(tile, fallbackProbability)
+                    end
                 end
             end
         end
@@ -1218,11 +1382,15 @@ end
 -- Runs solver passes until no new deductions (like the live loop re-solving
 -- after each change). Returns the number of passes run.
 function M.Solve(board, maxPasses)
+    M.ClearSolverOutput(board)
     maxPasses = maxPasses or CONFIG.MaxSolvePasses or 50
     local passes = 0
     repeat
         passes = passes + 1
         local progress = M.Run(board)
+        if board.Status == "contradiction" then
+            break
+        end
     until not progress or passes >= maxPasses
     return passes
 end
