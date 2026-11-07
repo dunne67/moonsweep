@@ -21,4 +21,3 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Exact brute-force combinatorial verification suite (`tests/bruteforce.lua`).
 - Win-rate and performance benchmark suite (`bench/bench.lua`).
 - GitHub Actions CI workflow testing Lua 5.1, 5.2, 5.3, 5.4, and LuaJIT.
-- LuaRocks rockspec manifest (`moonsweep-1.0.0-1.rockspec`).

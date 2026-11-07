@@ -31,16 +31,9 @@ Given any board position and total mine count, `moonsweep` computes the mathemat
 
 ## Installation
 
-### Direct Copy
 Copy [`moonsweep.lua`](moonsweep.lua) into your project or module path:
 ```lua
 local MS = require("moonsweep")
-```
-
-### LuaRocks (coming soon)
-```bash
-# Will be published upon v1.0.0 release
-luarocks install moonsweep
 ```
 
 ---
