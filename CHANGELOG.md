@@ -17,7 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Deterministic solving by default (time limits disabled by default, bounded by state cap).
 - Incremental board modification (`SetCell`) and solver state reset (`Reset`, `ClearSolverOutput`).
 - Command-line example scripts: `examples/basic.lua` and `examples/autoplay.lua`.
-- Test suite with 28 automated tests covering patterns, modes, validation, and contradictions (`tests/run.lua`).
+- Test suite with 29 automated tests covering patterns, modes, validation, and contradictions (`tests/run.lua`).
 - Exact brute-force combinatorial verification suite (`tests/bruteforce.lua`).
 - Win-rate and performance benchmark suite (`bench/bench.lua`).
 - GitHub Actions CI workflow testing Lua 5.1, 5.2, 5.3, 5.4, and LuaJIT.
