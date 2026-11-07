@@ -37,8 +37,9 @@ Copy [`moonsweep.lua`](moonsweep.lua) into your project or module path:
 local MS = require("moonsweep")
 ```
 
-### LuaRocks
+### LuaRocks (coming soon)
 ```bash
+# Will be published upon v1.0.0 release
 luarocks install moonsweep
 ```
 
@@ -77,16 +78,16 @@ end
 Status: ok (Exact: true)
 
 Board view:
-EE1s
-112*
-s*ss
+EE1?
+112?
+*ss*
 
 Probabilities:
-    E    E    1    s
-    1    1    2    *
-    s    *    s    s
+    E    E    1  50%
+    1    1    2  50%
+    *    s    s    *
 
-Best move: col 4, row 1 (risk: 0.0%)
+Best move: col 2, row 3 (risk: 0.0%)
 ```
 
 ---
@@ -232,30 +233,37 @@ MS.Config = {
 
 ### 1. Accuracy vs. Brute-Force Enumeration
 Accuracy was verified against an independent brute-force combinatorial engine ([`tests/bruteforce.lua`](tests/bruteforce.lua)) that enumerates every possible valid mine placement. Across thousands of randomly generated boards across all 7 non-calculative modes:
-- **Accuracy**: **100% exact match** (error $< 10^{-9}$) whenever the frontier state cap is not exceeded.
+- **Accuracy**: **100% exact match** (absolute error $< 10^{-9}$) whenever the frontier state cap is not exceeded.
+- Calculative mode is verified against hand-checked modular arithmetic test cases in [`tests/run.lua`](tests/run.lua).
 - Reproduce:
   ```bash
   lua tests/bruteforce.lua 200 1
   ```
 
 ### 2. Autoplay Win Rates & Speed
-Benchmarked with [`bench/bench.lua`](bench/bench.lua) using a reproducible seed (`--seed 1`) under standard opening rules (first click guaranteed opening zero):
+Benchmarked with [`bench/bench.lua`](bench/bench.lua) under standard guaranteed opening zero rules:
+- **First-click rule**: The solver starts by revealing the center cell, guaranteed to be an opening zero (the center cell and all its neighbors have 0 mines, opening an initial safe region via flood-fill). Other solvers using different first-click rules (e.g. single safe cell without guaranteed zero) achieve lower win rates.
+- **Seed reproducibility**: Pseudo-random sequences are reproducible per interpreter (`--seed 1`). Note that Lua 5.1 and LuaJIT use distinct internal PRNG algorithms, producing different board sequences for the same seed.
+- **Safety integrity**: Across all benchmark games, **0 cells predicted as safe were ever mines**.
 
-| Difficulty | Grid | Mines | Games | Win Rate | Avg Game (ms) | Worst Game (ms) | Avg Solve (ms) | Worst Solve (ms) |
-|---|---|---|---|---|---|---|---|---|
-| **Beginner** | 9×9 | 10 | 100 | **97.00%** | 4.07 ms | 37.0 ms | 0.900 ms | 9.0 ms |
-| **Intermediate** | 16×16 | 40 | 100 | **92.00%** | 23.78 ms | 98.0 ms | 2.392 ms | 12.0 ms |
-| **Expert** | 30×16 | 99 | 100 | **53.00%** | 151.43 ms | 372.0 ms | 6.258 ms | 27.0 ms |
+#### Performance Summary (AMD Ryzen 7 5800U @ 1.9–4.4 GHz, Windows 11)
 
-*Hardware: Intel Core i7 / Windows 11, running under LuaJIT 2.1.*
+| Difficulty | Grid | Mines | Interpreter | Games | Win Rate | False Safes | Avg Game | Worst Game | Avg Solve | Worst Solve |
+|---|---|---|---|---|---|---|---|---|---|---|
+| **Beginner** | 9×9 | 10 | LuaJIT 2.1 | 10,000 | **96.58%** | 0 | 4.41 ms | 92.0 ms | 1.027 ms | 18.0 ms |
+| **Beginner** | 9×9 | 10 | Lua 5.1 | 500 | **96.20%** | 0 | 5.59 ms | 71.0 ms | 0.882 ms | 14.0 ms |
+| **Intermediate** | 16×16 | 40 | LuaJIT 2.1 | 5,000 | **87.70%** | 0 | 31.93 ms | 722.0 ms | 3.124 ms | 279.0 ms |
+| **Intermediate** | 16×16 | 40 | Lua 5.1 | 200 | **88.50%** | 0 | 59.57 ms | 232.0 ms | 4.445 ms | 46.0 ms |
+| **Expert** | 30×16 | 99 | LuaJIT 2.1 | 1,000 | **51.20%** | 0 | 205.32 ms | 748.0 ms | 8.813 ms | 130.0 ms |
+| **Expert** | 30×16 | 99 | Lua 5.1 | 50 | **46.00%** | 0 | 428.54 ms | 1016.0 ms | 18.385 ms | 83.0 ms |
 
-Under plain Lua 5.1 (without JIT compilation):
-- **Beginner**: 4.26 ms per game (0.63 ms per solve).
-- **Intermediate**: 46.28 ms per game (3.42 ms per solve).
-
-Reproduce:
+Reproduce locally:
 ```bash
-luajit bench/bench.lua --seed 1 --games 100 --difficulty all
+# Run benchmark on LuaJIT:
+luajit bench/bench.lua --seed 1 --games 1000 --difficulty intermediate
+
+# Run benchmark on plain Lua 5.1:
+lua bench/bench.lua --seed 1 --games 500 --difficulty beginner
 ```
 
 ---

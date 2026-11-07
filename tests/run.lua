@@ -350,6 +350,38 @@ for _, modeName in ipairs(allModes) do
     end)
 end
 
+test("Calculative mode hand-checked modular arithmetic decoding", function()
+    -- Clues: raw numbers 17 (rem 1 -> 1), 18 (rem 2 -> 2), 17 (rem 1 -> 1).
+    -- Forms a 1-2-1 pattern with 2 mines total.
+    local board = MS.BuildBoard({
+        { 17, 18, 17 },
+        { "?", "?", "?" }
+    }, 2, "Calculative")
+    MS.Solve(board)
+    assert_eq(board.Status, "ok")
+    assert_eq(board.Grid[1][2].predicted, "mine")
+    assert_near(board.Grid[1][2].probability, 1.0, 1e-6)
+    assert_eq(board.Grid[2][2].predicted, "safe")
+    assert_near(board.Grid[2][2].probability, 0.0, 1e-6)
+    assert_eq(board.Grid[3][2].predicted, "mine")
+    assert_near(board.Grid[3][2].probability, 1.0, 1e-6)
+
+    -- Clue 16: 16 % 8 == 0 -> decodes to 8. Center of 3x3 with 8 mines forces all 8 neighbors to be mines.
+    local board8 = MS.BuildBoard({
+        { "?", "?", "?" },
+        { "?", 16,  "?" },
+        { "?", "?", "?" }
+    }, 8, "Calculative")
+    MS.Solve(board8)
+    assert_eq(board8.Status, "ok")
+    for _, t in ipairs(board8.Tiles) do
+        if t.Type == "unknown" then
+            assert_eq(t.predicted, "mine")
+            assert_near(t.probability, 1.0, 1e-6)
+        end
+    end
+end)
+
 -- -------------------------------------------------------------------------
 -- Group 7: Brute-force verification
 -- -------------------------------------------------------------------------

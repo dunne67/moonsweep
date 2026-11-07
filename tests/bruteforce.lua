@@ -166,7 +166,7 @@ function M.RunBruteForceTest(numTrials, seed, verbose)
                             gotProb = 0
                         end
 
-                        if gotProb == nil or math.abs(gotProb - exactProb) > 1e-6 then
+                        if gotProb == nil or math.abs(gotProb - exactProb) > 1e-9 then
                             fails = fails + 1
                             if verbose or fails <= 5 then
                                 print(string.format(

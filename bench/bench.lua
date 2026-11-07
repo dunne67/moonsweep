@@ -1,6 +1,13 @@
 -- bench/bench.lua
 -- Speed and win-rate benchmark for moonsweep.
 --
+-- Benchmark rules:
+--   - First-click rule: Guaranteed opening zero at the board center (no adjacent mines).
+--   - Seed portability: Pseudo-random sequences are reproducible per interpreter.
+--     Lua 5.1 and LuaJIT use distinct PRNG implementations.
+--   - Verification: Tracks any false-safe determinations (if a cell predicted safe
+--     turns out to be a mine).
+--
 -- Usage:
 --   lua bench/bench.lua [--seed N] [--games N] [--difficulty beginner|intermediate|expert|all]
 
@@ -10,7 +17,7 @@ local MS = require("moonsweep")
 local function parseArgs(args)
     local opts = {
         seed = 1,
-        games = 100,
+        games = 10000,
         difficulty = "all",
         mode = "Regular"
     }
@@ -157,7 +164,8 @@ local function simulateGame(W, H, numMines, modeName, gameSeed)
             for _, t in ipairs(safeClicks) do
                 local ok = revealCell(t.X, t.Z)
                 if not ok then
-                    return false, solveCount, solveTimeTotal, maxSolveTime
+                    -- Cell predicted safe was actually a mine!
+                    return false, solveCount, solveTimeTotal, maxSolveTime, true
                 end
                 if revealedCount >= targetSafeCount then break end
             end
@@ -166,13 +174,14 @@ local function simulateGame(W, H, numMines, modeName, gameSeed)
             if not bestTile then break end
             local ok = revealCell(bestTile.X, bestTile.Z)
             if not ok then
-                return false, solveCount, solveTimeTotal, maxSolveTime
+                -- Lowest-probability guess hit a mine (normal loss)
+                return false, solveCount, solveTimeTotal, maxSolveTime, false
             end
         end
     end
 
     local won = (revealedCount >= targetSafeCount)
-    return won, solveCount, solveTimeTotal, maxSolveTime
+    return won, solveCount, solveTimeTotal, maxSolveTime, false
 end
 
 local function runBenchmark(name, W, H, numMines, numGames, baseSeed, modeName)
@@ -180,6 +189,7 @@ local function runBenchmark(name, W, H, numMines, numGames, baseSeed, modeName)
         name, W, H, numMines, numGames, baseSeed))
 
     local wins = 0
+    local falseSafes = 0
     local totalGameTime = 0
     local maxGameTime = 0
     local totalSolves = 0
@@ -191,10 +201,11 @@ local function runBenchmark(name, W, H, numMines, numGames, baseSeed, modeName)
     for g = 1, numGames do
         local gameSeed = baseSeed + (g * 1009)
         local g0 = os.clock()
-        local won, solves, solveTime, maxSolve = simulateGame(W, H, numMines, modeName, gameSeed)
+        local won, solves, solveTime, maxSolve, isFalseSafe = simulateGame(W, H, numMines, modeName, gameSeed)
         local gTime = (os.clock() - g0) * 1000
 
         if won then wins = wins + 1 end
+        if isFalseSafe then falseSafes = falseSafes + 1 end
         totalGameTime = totalGameTime + gTime
         if gTime > maxGameTime then maxGameTime = gTime end
         totalSolves = totalSolves + solves
@@ -213,6 +224,7 @@ local function runBenchmark(name, W, H, numMines, numGames, baseSeed, modeName)
         mines = numMines,
         games = numGames,
         wins = wins,
+        falseSafes = falseSafes,
         winRate = winRate,
         avgGameMs = avgGameMs,
         maxGameMs = maxGameTime,
@@ -254,10 +266,10 @@ for _, d in ipairs(queue) do
 end
 
 print("\n### Benchmark Summary")
-print("| Difficulty | Dimensions | Mines | Games | Wins | Win Rate | Avg Game (ms) | Worst Game (ms) | Avg Solve (ms) | Worst Solve (ms) |")
-print("|---|---|---|---|---|---|---|---|---|---|")
+print("| Difficulty | Dimensions | Mines | Games | Wins | Win Rate | False Safes | Avg Game (ms) | Worst Game (ms) | Avg Solve (ms) | Worst Solve (ms) |")
+print("|---|---|---|---|---|---|---|---|---|---|---|")
 for _, r in ipairs(results) do
-    print(string.format("| %s | %s | %d | %d | %d | %.2f%% | %.2f ms | %.2f ms | %.3f ms | %.2f ms |",
-        r.name, r.dimensions, r.mines, r.games, r.wins, r.winRate,
+    print(string.format("| %s | %s | %d | %d | %d | %.2f%% | %d | %.2f ms | %.2f ms | %.3f ms | %.2f ms |",
+        r.name, r.dimensions, r.mines, r.games, r.wins, r.winRate, r.falseSafes,
         r.avgGameMs, r.maxGameMs, r.avgSolveMs, r.maxSolveMs))
 end
